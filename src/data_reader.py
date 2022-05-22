@@ -2,11 +2,14 @@ from dataclasses import dataclass
 from functools import partial
 import pandas as pd
 import logging
-from typing import List, Dict, Optional, Union, Tuple
+import json
+from typing import List, Dict, Optional, Union, Tuple, Set
 from pathlib import Path
-from definitions import log_path, datafile_path
+from definitions import distance_cache_path
+from geopy.geocoders import Nominatim
+from geopy.distance import geodesic
 
-logging.basicConfig(filename=log_path / "reader.log", level=logging.DEBUG)
+loc = Nominatim(user_agent="MatchMaker")
 
 
 @dataclass
@@ -30,6 +33,44 @@ class ProductType:
         return pt_list
 
 
+class Distance:
+
+    def __init__(self, products_: pd.Series, customers_: pd.Series):
+        self.all_countries: Set[str] = set(pd.concat([products_, customers_], ignore_index=True))
+        self.matrix: Dict[str, Dict[str, float]] = {}
+        if distance_cache_path.is_file():
+            with open(distance_cache_path, 'r') as matrix_file:
+                try:
+                    self.matrix = json.load(matrix_file)
+                except json.JSONDecodeError as je:
+                    logging.error(je)
+        if not self.all_countries.issubset(self.matrix.keys()):
+            logging.info(f"Distance matrix not found or incomplete, updating.")
+            self._update_matrix()
+
+    def _update_matrix(self) -> None:
+        countries_w_gps: Dict[str, Tuple[float, float]] = {c: self._get_lat_lon(c) for c in self.all_countries}
+        self.matrix = {cl: {cr: 0 for cr in countries_w_gps} for cl in countries_w_gps}
+        for country_l, gps_l in countries_w_gps.items():
+            for country_r, gps_r in countries_w_gps.items():
+                if country_r == country_l:
+                    continue
+                elif self.matrix[country_r][country_l] != 0:
+                    self.matrix[country_l][country_r] = self.matrix[country_r][country_l]
+                else:
+                    self.matrix[country_l][country_r] = geodesic(gps_l, gps_r).kilometers / 1000
+        with open(distance_cache_path, 'w') as matrix_file:
+            json.dump(self.matrix, matrix_file)
+
+    def get(self, country_l: str, country_r: str) -> float:
+        return self.matrix[country_l][country_r]
+
+    @staticmethod
+    def _get_lat_lon(country: str) -> Tuple[float, float]:
+        gps = loc.geocode(country)
+        return gps.latitude, gps.longitude
+
+
 class RawData:
 
     exp_sheets: Dict[str, Union[List[str], bool]] = {
@@ -48,8 +89,10 @@ class RawData:
             for sheet, datetime in self.exp_sheets.items():
                 setattr(self, sheet, pd.read_excel(xlspath, sheet_name=sheet, parse_dates=datetime))
                 logging.info(f"Reading sheet {sheet}")
-        self.proc_products = self._process_products()
-        self.proc_customers = self._process_customers()
+        self.proc_products: pd.DataFrame = self._process_products()
+        self.proc_customers: pd.DataFrame = self._process_customers()
+        self.distance: Distance = Distance(self.proc_products['country'], self.proc_customers['country'])
+        self.mean_prices: pd.DataFrame = self._get_mean_price()
 
     def _process_products(self) -> pd.DataFrame:
         product: pd.DataFrame = self.products.copy()
@@ -68,9 +111,9 @@ class RawData:
 
     def _process_customers(self) -> pd.DataFrame:
         customer: pd.DataFrame = self.customers.copy()
-        customer['s-b-o'] = customer['interest'].apply(lambda i: Trade('sell' in i, 'buy' in i, 'other' in i))
+        customer['interest'] = customer['interest'].apply(lambda i: Trade('sell' in i, 'buy' in i, 'other' in i))
         customer['amount'] = customer['waste_amount'].apply(self._to_range)
-        customer.drop(columns=['interest', 'waste_amount', 'created'], inplace=True)
+        customer.drop(columns=['waste_amount', 'created'], inplace=True)
         customer[['message', 'contact', 'pview']] = customer['customer_id'].apply(self._get_activity)
         return customer
 
@@ -79,6 +122,18 @@ class RawData:
         contacts: List[int] = self._interaction_to_list(self.connect, cid, 'contact_show')
         views: List[int] = self._interaction_to_list(self.activity, cid, 'event_name')
         return pd.Series([messages, contacts, views])
+
+    def _get_mean_price(self) -> pd.DataFrame:
+        priced_products: pd.DataFrame = self.proc_products[['category', 'sub_category', 'product_type', 'eur_price',
+                                                  'pricing_type', 'unit']].copy()
+        priced_products = priced_products[(priced_products['pricing_type'] == 'per_unit')
+                                          & (priced_products['unit'] == 't')]
+        priced_products.drop(columns=['pricing_type', 'unit'], inplace=True)
+        priced_products['product_type'] = priced_products['product_type'].apply(ProductType.to_list)
+        priced_products = priced_products.explode('product_type')
+        priced_products = priced_products.groupby(by=['category', 'sub_category', 'product_type']).mean().reset_index()
+        priced_products.rename(columns={'eur_price': 'mean_price'}, inplace=True)
+        return priced_products
 
     @staticmethod
     def _to_range(rng_lbl: Optional[str]) -> Optional[Tuple[float, float]]:
@@ -119,10 +174,4 @@ class RawData:
         if in_unit != 'kg':
             return pd.Series([in_price, in_qty, in_unit])
         else:
-            return pd.Series([in_price/1000, in_qty/1000, 't'])
-
-
-if __name__ == '__main__':
-
-    rd = RawData(datafile_path)
-    pass
+            return pd.Series([in_price * 1000, in_qty / 1000, 't'])

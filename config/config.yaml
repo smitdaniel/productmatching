@@ -1,0 +1,19 @@
+source: "source.xlsx"   # source file to load
+suggestions: 5    # number of suggestions per customer
+activity_weight:  # scoring of customer recorded activity
+  views: 1        # page view counts; gets a count per each product type (i.e. 'recycled;waste' yields two hits)
+  messages: 5     # sending a message
+  contacts: 5     # viewing contact
+penalty:
+  quantity: 0.5   # scoring penalty if quantity is below customer preference
+  shipping: 0.5   # scoring penalty if shipping is not available
+  distance: 0.1   # scoring penalty per each 1000 km of product-customer distance
+  pricing: 0      # relative pricing penalty among top choices
+                  # NOTE: provided pricing in data is often completely wrong, so this be better disabled
+customer_filter:  # filter out customers by status
+  blocked: True
+  deleted: True
+  selling: True
+time_window:      # define window of interest
+  before: '2021-11-29'
+  days: 7
