@@ -90,6 +90,14 @@ class MatchMaker:
     """Contains the processing and logic of the match selection."""
 
     def __init__(self, config_path_: Path = config_path, write: bool = True):
+        """
+        Create MatchMaker object with the particular provided configuration.
+
+        The object creation involves the full process of data reading, processing, and
+        suggestion computation and so it may take several seconds.
+        :param config_path_: path to program configuration yaml file
+        :param write: whether to write output or not
+        """
         self.config: Config = Config(config_path_)
         xlspath: Path = data_path / self.config.config_data['source']
         _weights: Weights = self.config.get_weights()
@@ -249,4 +257,4 @@ class MatchMaker:
 
 
 if __name__ == "__main__":
-    mm: MatchMaker = MatchMaker(config_path, write=False)
+    mm: MatchMaker = MatchMaker()

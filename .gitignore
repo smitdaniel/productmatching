@@ -3,6 +3,12 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# documentation
+doc/*
+!doc/documentation.tex
+!doc/documentation.pdf
+!doc/requirements.txt
+
 # C extensions
 *.so
 

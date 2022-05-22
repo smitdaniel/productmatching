@@ -8,12 +8,12 @@ penalty:
   quantity: 0.5   # scoring penalty if quantity is below customer preference
   shipping: 0.5   # scoring penalty if shipping is not available
   distance: 0.1   # scoring penalty per each 1000 km of product-customer distance
-  pricing: 0      # relative pricing penalty among top choices
+  pricing: 0      # relative pricing penalty wrt mean price of the category, per euro
                   # NOTE: provided pricing in data is often completely wrong, so this be better disabled
 customer_filter:  # filter out customers by status
   blocked: True
   deleted: True
-  selling: True
+  selling: True   # set interest only to sell
 time_window:      # define window of interest
-  before: '2021-11-29'
-  days: 7
+  before: '2021-11-29'  # last day of time window
+  days: 7               # time window length

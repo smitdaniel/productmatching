@@ -1,0 +1,199 @@
+\documentclass{report}
+\usepackage{inputenc}
+\usepackage{fontenc}
+\usepackage{dirtree}
+
+\begin{document}
+
+\section*{Introduction}
+
+The program is supposed to resolve the task as follows. There is a waste/recycled commodity marketplace with
+product offers and registered customers. The customers, besides posting offers, view products offered, view
+contacts of the seller, and message sellers. The activity of customers, that is \emph{viewing page}, 
+\emph{viewing contacts} and \emph{sending messages} is logged. Based on the record of customer behaviour and 
+the product newly offered over a specific period of time, suggest to customers those of the new products, that 
+match best their history of interest.
+
+\section*{Method}
+
+We will shortly introduce the available data the method is based on, and then the method itself.
+
+\subsection*{Data}
+
+The key data used for \textbf{customers} is \emph{customer id} (int), \emph{country}, preferred \emph{amount}
+of waste, whether their accounts have been \emph{deleted} or \emph{blocked}, and a triplet of basic interests of
+whether the customer wants to \emph{(buy, sell, other)}. The customer activity is tracked in terms of 
+\emph{product id} they interacted with, and whether the interaction was \emph{page view}, \emph{contact view}
+or \emph{message} to the seller. The historical activity data and interactions with a particular type of product
+were used to establish customer preferences.
+
+The key data used for \textbf{products}, particularly to evaluate product viability for the customer, were \emph{unit price},
+\emph{location}, and \emph{availability of shipping}. To evaluate customer interests based on interactions with a 
+particular product id, the important fields were \emph{category} (e.g. plastic, metal), \emph{subcategory} (e.g.
+pp, aluminium), and \emph{product type}, which is one or more of \emph{waste}, \emph{recycled}, \emph{byproduct} for
+each item.
+
+Note that the prices listed in the product data seem highly incorrect for many products, which is probably due to 
+price input for an incorrect unit. Besides, a large proportion of products does not have price attached.
+
+\subsection*{Processing}
+
+For further use, we converted all prices to euro, and all weight-based units to metric tons. We converted string
+based data (amount range, interest, product type) into tuple-like structures. We computed mean price for each unique
+\emph{category-sub category-product type} combination in the data, but the averages are obviously incorrect (as 
+stated above) and we didn't use the price-based logic.
+
+For each customer, we collected three lists of \emph{product id}s, a list of ids for which they \emph{viewed page},
+\emph{viewed contacts}, and \emph{sent message}. We (optionally) filtered out customers, whose accounts are 
+blocked or deleted, and who set their preference to \emph{sell} only.
+
+\paragraph{Geolocation} To be able to estimate the delivery distance, we used OSM api to compute representative 
+distance (in thousands of kilometres) between each pair of countries appearing in the data. The matrix is cached,
+as its calculation takes some time because of the api calls.
+
+\subsection*{Preference Scoring}
+
+To select the best recommendations for each customer, we computed their scored preferences based on the previous 
+activity.
+
+\begin{enumerate}
+	\item We assigned weight to each activity (configurable, see implementation) based on its type.
+	\item For each customer, we combined the activities relating to each particular \emph{product id}, 
+		summing the weights of each aggregated activity type (e.g. one page view for with weight 1 and a 
+		message sent with weight 5 for a single \emph{product id} gives weight 6 for the product).
+	\item For each customer, we sub-selected the \emph{product ids} they interacted with, including the
+		information about \emph{category}, \emph{subcategory}, \emph{product type} of that product, 
+		including the aggregate \emph{weight} of the interaction they had with the particular \emph{product id}.
+	\item For each customer, we grouped this table of \emph{product ids} and related information over the 
+		unique triplets of \emph{category}-\emph{subcategory}-\emph{product type}, and for each 
+		such product categorization (triplet categorization), we summed the weights.
+\end{enumerate}
+
+This method allows us to get scored (weighted) preference of each customer for category of products defined by such triplets
+(that is \emph{category}-\emph{subcategory}-\emph{product type}). This scored preference is based on all unique triplets they 
+interacted with by \emph{viewing page} or \emph{viewing contact} or \emph{messaging}. 
+Note that such preferences are defined for each user, but are aggregated over their \emph{product id} interactions.
+
+\subsection*{Affordability Scoring}
+
+Having computed weighted user preferences, we matched each users' (triple categorized) preferences to the list of
+products added within a time window of interest. For each matching triplet, we obtained personalized preference 
+score of the given customer for the given product.
+
+We filtered out such preference matched \emph{product ids}, which the customer has already messaged, or which belong
+to them.
+
+To further evaluate a particular new product choice, we assigned a series of real-world penalties, depending on the
+absence of shipping offer, distance to the product, offer being lower than customer's preferred range, and the 
+offer being too expensive as compared to the average unit price.
+
+Of such combined preference and affordability score, we select a given number (see implementation) of best scored
+options.
+
+In case the number of found matches does not yield the required number of recommendations, we repeat the matching 
+phase, but matching only on \emph{category}-\emph{product type} couplet. In case there are fewer matches after such
+relaxation, lower count is accepted. If nothing is found, the absence of match is reported for the given time window.
+
+The final results are stored in form of an Excel file, with the \emph{customer id}, a list of their 3 (optionally)
+top triplet preferences, and a list of top suggested products. Note that if a given recommended \emph{product id}
+refers to more than one \emph{product type}, all available types are listed on separate lines.
+
+\section*{Implementation}
+
+\subsection*{File Structure}
+
+The program is implemented in Python, relying on Pandas library. The structure is as follows\\
+
+\dirtree{%
+.1 productmatching.
+.2 config.
+.3 config.yaml.
+.2 data.
+.3 distance.json.
+.3 source.xlsx.
+.2 doc.
+.3 documentation.tex.
+.3 documentation.pdf.
+.3 requirements.txt.
+.2 log.
+.3 matchmaker.log.
+.2 out.
+.3 results.xlsx.
+.2 src.
+.3 definitions.py.
+.3 data\_reader.py.
+.3 matchmaker.py.
+}
+
+\vspace{1em}
+
+The file \emph{config.yaml} contains the configuration for the program run. Particularly the data source, the number of
+expected suggestions to show to a customer, the weights for customer activities (e.g. \emph{messages}), 
+the penalties for product affordability (e.g. \emph{distance}), filter rules for customers (e.g. \emph{blocked}), and 
+the required time window definition. All options are commented.
+
+\emph{distance.json} contains distance matrix between relevant countries, \emph{source.xlsx} is the file with the source
+data (\textbf{not gitted}).
+
+The \emph{documentation.pdf} (and its tex source) is this file, while \emph{requirements.txt} contain the list of python libraries. 
+The \emph{matchmaker.log} contains reports of basic steps of the program run. 
+
+\emph{results.xlsx} is an Excel file with the final suggestions.
+
+\emph{definitions.py} defines program paths, \emph{data\_reader.py} deals with basic reading and data processing, 
+\emph{matchmaker.py} implements the scoring logic.
+
+\subsection*{Main Classes}
+
+The processing steps are mainly implemented in the \emph{date\_reader.py} in the class \emph{RawData}. 
+It adapts the input data into required form, changes the strings into tuple-like structures. The \emph{Distance} class maintains 
+the distance matrix (the one cached in \emph{distance.json}).
+
+The scoring logic is implemented in \emph{matchmaker.py}. Upon object creation, the initialization method first reads the
+configuration from the \emph{config.yaml} file through an object of \emph{Config} class. Then, it invokes \emph{date\_reader.py}'s 
+\emph{RawData} class to read and parse the data. Then, it computes the customer triplet preferences as described in the section 
+Preference Scoring. Then it filters the new products added within the required window, and matches those products against 
+individual users preferences and affordability criteria.
+
+\subsection*{Running the Program}
+
+In the default settings, one can simply run the program by running \emph{matchmaker.py} as a script. As default, it reads
+configuration from \emph{config.yaml} and writes results to \emph{results.xlsx}. The run takes a couple seconds. This supposes
+one has the necessary packages installed within the used Python environment.
+
+The analysing method, a \emph{MatchMaker} class constructor, has two optional parameters, \emph{MatchMaker(config\_path\_, write)}. 
+The first argument is path to configuration file, the second argument is a switch to write results or not.
+
+To change configuration, either edit \emph{config.yaml} directly, or create a new yaml file, and pass the path as the first argument 
+to \emph{MatchMaker}. The computation is performed when object \emph{MatchMaker} is created.
+
+To run in a Python console, add the source path to the environment, import the class and create the object.
+
+\begin{verbatim*}
+sys.path.extend(['.../productmatching/src']) 
+import matchmaker
+matchmaker.MatchMaker()
+\end{verbatim*}
+
+\paragraph{Note} To run the program, you need the source data under \emph{data/source.xlsx}. This data is not gitted, so
+to test, you need to add such file manually.
+
+\section*{Validation}
+
+The following methods could be used to validate the approach:
+
+\paragraph{Comparison to random selection} One would simply generate the suggestions by randomly choosing from the new products, and
+then compare, whether this choice corresponds to customer preferences (as outlined above), and how it differs from the current
+implementation.
+
+\paragraph{Sampling and noise} One should be able to sample only a part of the history data, and still obtain similar recommendation, using the 
+implemented method. Equally, one could generate random extra noise with statistical properties (in terms of product category and type) of the 
+historical data, and assign such noise activity randomly to the customers, and still obtain similar recommendations.
+
+\paragraph{Splitting} One could split the historical data into two random samplings, and performing the analysis of each, should yield similar
+results between one and the other, and the current implementation.
+
+\paragraph{Historical comparison} One could perform the same analysis for a time window in the past, and then verify, whether the customer activity
+corresponded with the method prediction.
+
+\end{document}
