@@ -1,8 +1,8 @@
-from dataclasses import dataclass
-from functools import partial
 import pandas as pd
 import logging
 import json
+from dataclasses import dataclass
+from functools import partial
 from typing import List, Dict, Optional, Union, Tuple, Set
 from pathlib import Path
 from definitions import distance_cache_path
@@ -34,6 +34,9 @@ class ProductType:
 
 
 class Distance:
+    """
+    Manages distance matrix of countries involved in the data.
+    """
 
     def __init__(self, products_: pd.Series, customers_: pd.Series):
         self.all_countries: Set[str] = set(pd.concat([products_, customers_], ignore_index=True))
@@ -49,6 +52,8 @@ class Distance:
             self._update_matrix()
 
     def _update_matrix(self) -> None:
+        """Call OSM to compute countries' representative GPS, and pairwise distances between them.
+        Store the calculation in a cached json table."""
         countries_w_gps: Dict[str, Tuple[float, float]] = {c: self._get_lat_lon(c) for c in self.all_countries}
         self.matrix = {cl: {cr: 0 for cr in countries_w_gps} for cl in countries_w_gps}
         for country_l, gps_l in countries_w_gps.items():
@@ -61,8 +66,10 @@ class Distance:
                     self.matrix[country_l][country_r] = geodesic(gps_l, gps_r).kilometers / 1000
         with open(distance_cache_path, 'w') as matrix_file:
             json.dump(self.matrix, matrix_file)
+            logging.info(f"New distance matrix has been stored in {distance_cache_path}.")
 
     def get(self, country_l: str, country_r: str) -> float:
+        """Get distance in thousands of kilometres between two countries."""
         return self.matrix[country_l][country_r]
 
     @staticmethod
@@ -72,7 +79,9 @@ class Distance:
 
 
 class RawData:
+    """Manages data reading and basic pre-processing"""
 
+    # sheets expected in the source xlsx, with list of columns to be read as timestamps
     exp_sheets: Dict[str, Union[List[str], bool]] = {
         'data_dictionary': False,
         'products': ['created_datetime'],
@@ -95,6 +104,7 @@ class RawData:
         self.mean_prices: pd.DataFrame = self._get_mean_price()
 
     def _process_products(self) -> pd.DataFrame:
+        """Processes products, converts prices to EUR and quantity to tons, where possible."""
         product: pd.DataFrame = self.products.copy()
         product.rename(columns={'cyrkl_product_id': 'product_id', 'cyrkl_contact_id': 'customer_id',
                                 'created_datetime': 'created'}, inplace=True)
@@ -107,14 +117,17 @@ class RawData:
         product['product_type'] = product['product_type']\
             .apply(lambda lbl: ProductType('waste' in lbl, 'by-product' in lbl, 'recycled' in lbl))
         product.drop(columns=['price', 'currency', 'name', 'description'], inplace=True)
+        logging.info("Products information processed.")
         return product
 
     def _process_customers(self) -> pd.DataFrame:
+        """Processes customer data, gets lists of activities for each customer with the given product it."""
         customer: pd.DataFrame = self.customers.copy()
         customer['interest'] = customer['interest'].apply(lambda i: Trade('sell' in i, 'buy' in i, 'other' in i))
         customer['amount'] = customer['waste_amount'].apply(self._to_range)
         customer.drop(columns=['waste_amount', 'created'], inplace=True)
         customer[['message', 'contact', 'pview']] = customer['customer_id'].apply(self._get_activity)
+        logging.info("Customer information, connections, and activities, processed.")
         return customer
 
     def _get_activity(self, cid: int) -> pd.Series:
@@ -124,8 +137,10 @@ class RawData:
         return pd.Series([messages, contacts, views])
 
     def _get_mean_price(self) -> pd.DataFrame:
+        """Compute mean price for a given product type.
+        NOTE: The input prices are often quite wrong."""
         priced_products: pd.DataFrame = self.proc_products[['category', 'sub_category', 'product_type', 'eur_price',
-                                                  'pricing_type', 'unit']].copy()
+                                                            'pricing_type', 'unit']].copy()
         priced_products = priced_products[(priced_products['pricing_type'] == 'per_unit')
                                           & (priced_products['unit'] == 't')]
         priced_products.drop(columns=['pricing_type', 'unit'], inplace=True)
